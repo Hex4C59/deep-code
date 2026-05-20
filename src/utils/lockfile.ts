@@ -10,15 +10,16 @@
  */
 
 import type { CheckOptions, LockOptions, UnlockOptions } from 'proper-lockfile'
+import { createRequire } from 'node:module'
 
 type Lockfile = typeof import('proper-lockfile')
 
 let _lockfile: Lockfile | undefined
+const nodeRequire = createRequire(import.meta.url)
 
 function getLockfile(): Lockfile {
   if (!_lockfile) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    _lockfile = require('proper-lockfile') as Lockfile
+    _lockfile = nodeRequire('proper-lockfile') as Lockfile
   }
   return _lockfile
 }
