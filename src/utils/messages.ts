@@ -91,7 +91,7 @@ type HookAttachmentWithName = Exclude<
   HookPermissionDecisionAttachment
 >
 
-import type { APIError } from '@anthropic-ai/sdk'
+import type { APIError } from 'src/services/api/providerErrors.js'
 import type {
   BetaContentBlock,
   BetaMessage,

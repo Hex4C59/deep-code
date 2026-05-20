@@ -1,5 +1,5 @@
 import { feature } from '../../../stubs/bun-bundle.js'
-import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIUserAbortError } from 'src/services/api/providerErrors.js'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {

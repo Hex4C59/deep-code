@@ -111,7 +111,7 @@ import {
   APIConnectionTimeoutError,
   APIError,
   APIUserAbortError,
-} from '@anthropic-ai/sdk/error'
+} from 'src/services/api/providerErrors.js'
 import {
   getAfkModeHeaderLatched,
   getCacheEditingHeaderLatched,

@@ -41,7 +41,6 @@
     "@alcalzone/ansi-tokenize": "^0.3.0",
     "@anthropic-ai/mcpb": "^2.1.2",
     "@anthropic-ai/sandbox-runtime": "^0.0.52",
-    "@anthropic-ai/sdk": "^0.96.0",
     "@commander-js/extra-typings": "^14.0.0",
     "@growthbook/growthbook": "^1.6.5",
     "@modelcontextprotocol/sdk": "^1.29.0",
@@ -117,5 +116,13 @@
     "xss": "^1.0.15",
     "yaml": "^2.9.0",
     "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "^0.96.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    }
   }
 }

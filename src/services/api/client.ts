@@ -1,5 +1,5 @@
-import Anthropic, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
+import type { Anthropic, ClientOptions } from 'src/types/api-types.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAnthropicApiKey,
@@ -20,6 +20,25 @@ import {
 import { getOauthConfig } from '../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { normalizeProviderError } from './providerErrors.js'
+
+const ANTHROPIC_SDK_PACKAGE = '@anthropic-ai/sdk'
+
+type AnthropicSDKModule = {
+  default: new (config: Record<string, unknown>) => Anthropic
+}
+
+async function loadAnthropicSDK(): Promise<AnthropicSDKModule> {
+  try {
+    return (await import(ANTHROPIC_SDK_PACKAGE)) as AnthropicSDKModule
+  } catch (error) {
+    throw new Error(
+      `Anthropic provider support requires the optional ${ANTHROPIC_SDK_PACKAGE} package. Install it to use Anthropic-compatible API clients. Original error: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+  }
+}
 
 /**
  * Environment variables for API clients:
@@ -110,7 +129,7 @@ export async function getAnthropicClient({
   }
 
   // Determine authentication method based on available tokens
-  const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
+  const clientConfig: Record<string, unknown> = {
     apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),
     authToken: isClaudeAISubscriber()
       ? getClaudeAIOAuthTokens()?.accessToken
@@ -124,7 +143,8 @@ export async function getAnthropicClient({
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
 
-  return new Anthropic(clientConfig)
+  const { default: AnthropicSDK } = await loadAnthropicSDK()
+  return wrapProviderErrors(new AnthropicSDK(clientConfig))
 }
 
 async function configureApiKeyHeaders(
@@ -197,5 +217,87 @@ function buildFetch(
       // never let logging crash the fetch
     }
     return inner(input, { ...init, headers })
+  }
+}
+
+const proxyCache = new WeakMap<object, unknown>()
+
+function wrapProviderErrors<T>(value: T): T {
+  if (
+    value === null ||
+    (typeof value !== 'object' && typeof value !== 'function')
+  ) {
+    return value
+  }
+
+  const cached = proxyCache.get(value as object)
+  if (cached) return cached as T
+
+  const proxy = new Proxy(value as object, {
+    get(target, prop, receiver) {
+      const member = Reflect.get(target, prop, receiver)
+
+      if (typeof member === 'function') {
+        return (...args: unknown[]) => {
+          try {
+            const result = member.apply(target, args)
+            return wrapProviderResult(result)
+          } catch (error) {
+            throw normalizeProviderError(error)
+          }
+        }
+      }
+
+      return wrapProviderErrors(member)
+    },
+  })
+
+  proxyCache.set(value as object, proxy)
+  return proxy as T
+}
+
+function wrapProviderResult<T>(result: T): T {
+  if (isPromiseLike(result)) {
+    return result.catch((error: unknown) => {
+      throw normalizeProviderError(error)
+    }) as T
+  }
+
+  if (isAsyncIterable(result)) {
+    return wrapAsyncIterable(result) as T
+  }
+
+  return wrapProviderErrors(result)
+}
+
+function isPromiseLike(value: unknown): value is Promise<unknown> {
+  return (
+    value !== null &&
+    (typeof value === 'object' || typeof value === 'function') &&
+    'then' in value &&
+    typeof (value as { then?: unknown }).then === 'function'
+  )
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return (
+    value !== null &&
+    typeof value === 'object' &&
+    Symbol.asyncIterator in value &&
+    typeof (value as { [Symbol.asyncIterator]?: unknown })[
+      Symbol.asyncIterator
+    ] === 'function'
+  )
+}
+
+async function* wrapAsyncIterable(
+  iterable: AsyncIterable<unknown>,
+): AsyncIterable<unknown> {
+  try {
+    for await (const item of iterable) {
+      yield wrapProviderErrors(item)
+    }
+  } catch (error) {
+    throw normalizeProviderError(error)
   }
 }

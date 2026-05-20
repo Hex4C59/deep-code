@@ -1,4 +1,4 @@
-import { APIError } from '@anthropic-ai/sdk'
+import { APIError } from 'src/services/api/providerErrors.js'
 import type { MessageParam } from 'src/types/api-types.js'
 import isEqual from 'lodash-es/isEqual.js'
 import { getIsNonInteractiveSession } from '../bootstrap/state.js'

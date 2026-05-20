@@ -1,5 +1,5 @@
 import { feature } from '../../../stubs/bun-bundle.js'
-import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { APIUserAbortError } from 'src/services/api/providerErrors.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   getToolNameForPermissionCheck,

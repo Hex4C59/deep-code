@@ -1,5 +1,5 @@
 import { feature } from '../../../stubs/bun-bundle.js'
-import { APIError } from '@anthropic-ai/sdk'
+import { APIError } from 'src/services/api/providerErrors.js'
 import type {
   BetaStopReason,
   BetaUsage as Usage,

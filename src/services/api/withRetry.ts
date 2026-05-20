@@ -4,7 +4,7 @@ import {
   APIConnectionError,
   APIError,
   APIUserAbortError,
-} from '@anthropic-ai/sdk'
+} from 'src/services/api/providerErrors.js'
 import type { QuerySource } from 'src/constants/querySource.js'
 import type { SystemAPIErrorMessage } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
