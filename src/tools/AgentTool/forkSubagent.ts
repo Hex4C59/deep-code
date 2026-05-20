@@ -1,5 +1,5 @@
 import { feature } from '../../../stubs/bun-bundle.js'
-import type { BetaToolUseBlock } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+import type { BetaToolUseBlock } from 'src/types/api-types.js'
 import { randomUUID } from 'crypto'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {

@@ -1,4 +1,4 @@
-import type { ContentBlockParam, MessageParam } from '@anthropic-ai/sdk/resources/messages.mjs'
+import type { ContentBlockParam, MessageParam } from 'src/types/api-types.js'
 import type { UUID } from 'crypto'
 
 export type BaseLocalMessage = {

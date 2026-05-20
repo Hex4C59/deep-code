@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import type {
   BetaContentBlock,
   BetaUsage,
-} from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
+} from 'src/types/api-types.js'
 import type { StreamEvent, AssistantMessage, Message } from '../../types/message.js'
 import type { SystemPrompt } from '../../utils/systemPromptType.js'
 import type { ThinkingConfig } from '../../utils/thinking.js'

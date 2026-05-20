@@ -1,6 +1,6 @@
 import { feature } from '../../../stubs/bun-bundle.js'
-import type Anthropic from '@anthropic-ai/sdk'
-import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages.js'
+import type { Anthropic } from 'src/types/api-types.js'
+import type { BetaToolUnion } from 'src/types/api-types.js'
 import { mkdir, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
 import { z } from 'zod/v4'

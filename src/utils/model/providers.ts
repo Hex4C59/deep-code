@@ -1,24 +1,13 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 
-export type APIProvider =
-  | 'firstParty'
-  | 'bedrock'
-  | 'vertex'
-  | 'foundry'
-  | 'openaiCompat'
+export type APIProvider = 'firstParty' | 'openaiCompat'
 
 export function getAPIProvider(): APIProvider {
   return !isEnvDefinedFalsy(process.env.CLOSE_CODE_USE_OPENAI_COMPAT) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_OPENAI_COMPAT)
     ? 'openaiCompat'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
-    ? 'bedrock'
-    : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
-      ? 'vertex'
-      : isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
-        ? 'foundry'
-        : 'firstParty'
+    : 'firstParty'
 }
 
 export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {

@@ -8,79 +8,57 @@ export type ModelConfig = Record<APIProvider, ModelName>
 
 export const CLAUDE_3_7_SONNET_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_V2_SONNET_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_HAIKU_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_HAIKU_4_5_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_5_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_1_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_5_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_6_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_6_CONFIG = {
   firstParty: 'gpt-4o-mini',
-  bedrock: 'gpt-4o-mini',
-  vertex: 'gpt-4o-mini',
-  foundry: 'gpt-4o-mini',
+  openaiCompat: 'gpt-4o-mini',
 } as const satisfies ModelConfig
 
 // @[MODEL LAUNCH]: Register the new config here.
