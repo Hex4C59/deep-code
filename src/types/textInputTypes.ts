@@ -319,11 +319,8 @@ export type QueuedCommand = {
    */
   skipSlashCommands?: boolean
   /**
-   * When true, slash commands are dispatched but filtered through
-   * isBridgeSafeCommand() — 'local-jsx' and terminal-only commands return
-   * a helpful error instead of executing. Set by the Remote Control bridge
-   * inbound path so mobile/web clients can run skills and benign commands
-   * without re-exposing the PR #19134 bug (/model popping the local picker).
+   * Legacy remote bridge marker. Close Code no longer enables upstream bridge
+   * input, but this remains in the queue type so old transcripts deserialize.
    */
   bridgeOrigin?: boolean
   /**

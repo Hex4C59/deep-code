@@ -14,14 +14,14 @@ import type {
   StreamEvent,
   SystemMessage,
 } from '../types/message.js'
-import { logForDebugging } from '../utils/debug.js'
-import { fromSDKCompactMetadata } from '../utils/messages/mappers.js'
-import { createUserMessage } from '../utils/messages.js'
+import { logForDebugging } from './debug.js'
+import { fromSDKCompactMetadata } from './messages/mappers.js'
+import { createUserMessage } from './messages.js'
 
 /**
- * Converts SDKMessage from CCR to REPL Message types.
+ * Converts SDKMessage from a remote SDK transport to REPL Message types.
  *
- * The CCR backend sends SDK-format messages via WebSocket. The REPL expects
+ * Remote transports send SDK-format messages. The REPL expects
  * internal Message types for rendering. This adapter bridges the two.
  */
 

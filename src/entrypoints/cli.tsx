@@ -4,15 +4,6 @@ import { feature } from '../../stubs/bun-bundle.js';
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = '0';
 
-// Set max heap size for child processes in CCR environments (containers have 16GB)
-// eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level, custom-rules/safe-env-boolean-check
-if (process.env.CLAUDE_CODE_REMOTE === 'true') {
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-  const existing = process.env.NODE_OPTIONS || '';
-  // eslint-disable-next-line custom-rules/no-top-level-side-effects, custom-rules/no-process-env-top-level
-  process.env.NODE_OPTIONS = existing ? `${existing} --max-old-space-size=8192` : '--max-old-space-size=8192';
-}
-
 // Harness-science L0 ablation baseline. Inlined here (not init.ts) because
 // BashTool/AgentTool/PowerShellTool capture DISABLE_BACKGROUND_TASKS into
 // module-level consts at import time — init() runs too late. feature() gate
@@ -37,7 +28,7 @@ async function main(): Promise<void> {
   if (args.length === 1 && (args[0] === '--version' || args[0] === '-v' || args[0] === '-V')) {
     // MACRO.VERSION is inlined at build time
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`${'0.0.1'} (Close Code)`);
+    console.log(`${process.env.CLAUDE_CODE_VERSION ?? '0.0.1'} (Close Code)`);
     return;
   }
 
@@ -102,62 +93,6 @@ async function main(): Promise<void> {
       runDaemonWorker
     } = await import('../daemon/workerRegistry.js');
     await runDaemonWorker(args[1]);
-    return;
-  }
-
-  // Fast-path for `claude remote-control` (also accepts legacy `claude remote` / `claude sync` / `claude bridge`):
-  // serve local machine as bridge environment.
-  // feature() must stay inline for build-time dead code elimination;
-  // isBridgeEnabled() checks the runtime GrowthBook gate.
-  if (feature('BRIDGE_MODE') && (args[0] === 'remote-control' || args[0] === 'rc' || args[0] === 'remote' || args[0] === 'sync' || args[0] === 'bridge')) {
-    profileCheckpoint('cli_bridge_path');
-    const {
-      enableConfigs
-    } = await import('../utils/config.js');
-    enableConfigs();
-    const {
-      getBridgeDisabledReason,
-      checkBridgeMinVersion
-    } = await import('../bridge/bridgeEnabled.js');
-    const {
-      BRIDGE_LOGIN_ERROR
-    } = await import('../bridge/types.js');
-    const {
-      bridgeMain
-    } = await import('../bridge/bridgeMain.js');
-    const {
-      exitWithError
-    } = await import('../utils/process.js');
-
-    // Auth check must come before the GrowthBook gate check — without auth,
-    // GrowthBook has no user context and would return a stale/default false.
-    // getBridgeDisabledReason awaits GB init, so the returned value is fresh
-    // (not the stale disk cache), but init still needs auth headers to work.
-    const {
-      getClaudeAIOAuthTokens
-    } = await import('../utils/auth.js');
-    if (!getClaudeAIOAuthTokens()?.accessToken) {
-      exitWithError(BRIDGE_LOGIN_ERROR);
-    }
-    const disabledReason = await getBridgeDisabledReason();
-    if (disabledReason) {
-      exitWithError(`Error: ${disabledReason}`);
-    }
-    const versionError = checkBridgeMinVersion();
-    if (versionError) {
-      exitWithError(versionError);
-    }
-
-    // Bridge is a remote control feature - check policy limits
-    const {
-      waitForPolicyLimitsToLoad,
-      isPolicyAllowed
-    } = await import('../services/policyLimits/index.js');
-    await waitForPolicyLimitsToLoad();
-    if (!isPolicyAllowed('allow_remote_control')) {
-      exitWithError("Error: Remote Control is disabled by your organization's policy.");
-    }
-    await bridgeMain(args.slice(1));
     return;
   }
 

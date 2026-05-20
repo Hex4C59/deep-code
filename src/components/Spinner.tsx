@@ -3,7 +3,6 @@ import { c as _c } from "react/compiler-runtime";
 import { Box, Text } from '../ink.js';
 import * as React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { computeGlimmerIndex, computeShimmerSegments, SHIMMER_INTERVAL_MS } from '../bridge/bridgeStatusUtil.js';
 import { feature } from '../../stubs/bun-bundle.js';
 import { getKairosActive, getUserMsgOptIn } from '../bootstrap/state.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js';
@@ -39,6 +38,26 @@ import { getGlobalConfig } from '../utils/config.js';
 export type { SpinnerMode } from './Spinner/index.js';
 const DEFAULT_CHARACTERS = getDefaultCharacters();
 const SPINNER_FRAMES = [...DEFAULT_CHARACTERS, ...[...DEFAULT_CHARACTERS].reverse()];
+const SHIMMER_INTERVAL_MS = 120;
+
+function computeGlimmerIndex(frame: number, width: number): number {
+  return frame % (width + 6) - 3;
+}
+
+function computeShimmerSegments(verb: string, glimmerIndex: number): {
+  before: string;
+  shimmer: string;
+  after: string;
+} {
+  if (glimmerIndex < 0 || glimmerIndex >= verb.length) {
+    return { before: verb, shimmer: '', after: '' };
+  }
+  return {
+    before: verb.slice(0, glimmerIndex),
+    shimmer: verb[glimmerIndex] ?? '',
+    after: verb.slice(glimmerIndex + 1),
+  };
+}
 type Props = {
   mode: SpinnerMode;
   loadingStartTimeRef: React.RefObject<number>;

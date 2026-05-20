@@ -1,5 +1,3 @@
-import axios from 'axios'
-import { getOauthConfig } from '../../constants/oauth.js'
 import {
   getOauthAccountInfo,
   getSubscriptionType,
@@ -7,9 +5,7 @@ import {
 } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { logError } from '../../utils/log.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
-import { getOAuthHeaders, prepareApiRequest } from '../../utils/teleport/api.js'
 import type {
   ReferralCampaign,
   ReferralEligibilityResponse,
@@ -26,43 +22,15 @@ let fetchInProgress: Promise<ReferralEligibilityResponse | null> | null = null
 export async function fetchReferralEligibility(
   campaign: ReferralCampaign = 'claude_code_guest_pass',
 ): Promise<ReferralEligibilityResponse> {
-  const { accessToken, orgUUID } = await prepareApiRequest()
-
-  const headers = {
-    ...getOAuthHeaders(accessToken),
-    'x-organization-uuid': orgUUID,
-  }
-
-  const url = `${getOauthConfig().BASE_API_URL}/api/oauth/organizations/${orgUUID}/referral/eligibility`
-
-  const response = await axios.get(url, {
-    headers,
-    params: { campaign },
-    timeout: 5000, // 5 second timeout for background fetch
-  })
-
-  return response.data
+  void campaign
+  return { eligible: false }
 }
 
 export async function fetchReferralRedemptions(
   campaign: string = 'claude_code_guest_pass',
 ): Promise<ReferralRedemptionsResponse> {
-  const { accessToken, orgUUID } = await prepareApiRequest()
-
-  const headers = {
-    ...getOAuthHeaders(accessToken),
-    'x-organization-uuid': orgUUID,
-  }
-
-  const url = `${getOauthConfig().BASE_API_URL}/api/oauth/organizations/${orgUUID}/referral/redemptions`
-
-  const response = await axios.get<ReferralRedemptionsResponse>(url, {
-    headers,
-    params: { campaign },
-    timeout: 10000, // 10 second timeout
-  })
-
-  return response.data
+  void campaign
+  return { redemptions: [], limit: 0 }
 }
 
 /**
@@ -209,7 +177,7 @@ export async function fetchAndStorePassesEligibility(): Promise<ReferralEligibil
       return response
     } catch (error) {
       logForDebugging('Failed to fetch and cache passes eligibility')
-      logError(error as Error)
+      void error
       return null
     } finally {
       // Clear the promise when done
