@@ -3188,6 +3188,10 @@ export function REPL({
       }
       const shouldTreatAsImmediate = queryGuard.isActive && (matchingCommand?.immediate || options?.fromKeybinding);
       if (matchingCommand && shouldTreatAsImmediate && matchingCommand.type === 'local-jsx') {
+        const isExitCommand = matchingCommand.name === 'exit';
+        if (isExitCommand) {
+          setIsExiting(true);
+        }
         // Only clear input if the submitted text matches what's in the prompt.
         // When a command keybinding fires, input is "/<command>" but the actual
         // input value is the user's existing text - don't clear it in that case.
@@ -3222,6 +3226,9 @@ export function REPL({
               shouldHidePromptInput: false,
               clearLocalJSX: true
             });
+            if (isExitCommand && result === undefined) {
+              setIsExiting(false);
+            }
             const newMessages: MessageType[] = [];
             if (result && doneOptions?.display !== 'skip') {
               addNotification({
@@ -3253,7 +3260,7 @@ export function REPL({
             // Restore stashed prompt after local-jsx command completes.
             // The normal stash restoration path (below) is skipped because
             // local-jsx commands return early from onSubmit.
-            if (stashedPrompt !== undefined) {
+            if (stashedPrompt !== undefined && !isExitCommand) {
               setInputValue(stashedPrompt.text);
               helpers.setCursorOffset(stashedPrompt.cursorOffset);
               setPastedContents(stashedPrompt.pastedContents);
@@ -3266,6 +3273,11 @@ export function REPL({
           // updates — matches the pattern at L2384/L2400/L2662 and avoids
           // pinning stale REPL render scopes in downstream closures.
           const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel);
+          if (isExitCommand) {
+            // Let Ink render once with PromptInput hidden before shutdown
+            // returns the terminal to the shell.
+            await new Promise(resolve => setTimeout(resolve, 0));
+          }
           const mod = await matchingCommand.load();
           const jsx = await mod.call(onDone, context, commandArgs);
 
