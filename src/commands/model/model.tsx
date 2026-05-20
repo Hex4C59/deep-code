@@ -1,0 +1,870 @@
+import chalk from 'chalk';
+import * as React from 'react';
+import type { CommandResultDisplay } from '../../commands.js';
+import { Select } from '../../components/CustomSelect/index.js';
+import { ModelPicker } from '../../components/ModelPicker.js';
+import { Pane } from '../../components/design-system/Pane.js';
+import { Spinner } from '../../components/Spinner.js';
+import TextInput from '../../components/TextInput.js';
+import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { Box, Text, useInput } from '../../ink.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
+import { useAppState, useSetAppState } from '../../state/AppState.js';
+import type { LocalJSXCommandCall } from '../../types/command.js';
+import type { EffortLevel } from '../../utils/effort.js';
+import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
+import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
+import { MODEL_ALIASES } from '../../utils/model/aliases.js';
+import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1mAccess.js';
+import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
+import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
+import { validateModel } from '../../utils/model/validateModel.js';
+import { isOpenAICompatEnabled } from '../../services/api/openaiCompat.js';
+import { getSettings_DEPRECATED, updateSettingsForSource } from '../../utils/settings/settings.js';
+type ModelCommandDone = (result?: string, options?: {
+  display?: CommandResultDisplay;
+}) => void;
+type OpenAICompatProvider = {
+  value: string;
+  name: string;
+  detail: string;
+  baseUrl: string;
+  model: string;
+  models?: string[];
+  apiKeyEnvNames: string[];
+};
+type SavedOpenAICompatProvider = {
+  name: string;
+  baseUrl: string;
+  model: string;
+  models: string[];
+  apiKeyEnvName: string;
+};
+type ProviderPickerState = {
+  state: 'idle';
+} | {
+  state: 'configure_name';
+  provider: OpenAICompatProvider;
+} | {
+  state: 'configure_url';
+  provider: OpenAICompatProvider;
+} | {
+  state: 'configure_api_key';
+  provider: OpenAICompatProvider;
+  baseUrl: string;
+} | {
+  state: 'loading_models';
+  provider: OpenAICompatProvider;
+  baseUrl: string;
+  apiKey: string;
+} | {
+  state: 'select_models';
+  provider: OpenAICompatProvider;
+  baseUrl: string;
+  apiKey: string;
+  models: string[];
+} | {
+  state: 'error';
+  message: string;
+  toRetry: ProviderPickerState;
+};
+const OPENAI_COMPAT_PROVIDERS: OpenAICompatProvider[] = [{
+  value: 'deepseek',
+  name: 'DeepSeek',
+  detail: 'deepseek-chat · api.deepseek.com',
+  baseUrl: 'https://api.deepseek.com/v1',
+  model: 'deepseek-chat',
+  apiKeyEnvNames: ['DEEPSEEK_API_KEY']
+}, {
+  value: 'glm',
+  name: 'GLM',
+  detail: 'Zhipu AI · OpenAI-compatible',
+  baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
+  model: 'glm-4-flash',
+  apiKeyEnvNames: ['GLM_API_KEY', 'ZHIPU_API_KEY']
+}, {
+  value: 'minimax',
+  name: 'MiniMax',
+  detail: 'MiniMax chat completions',
+  baseUrl: 'https://api.minimax.chat/v1',
+  model: 'MiniMax-Text-01',
+  apiKeyEnvNames: ['MINIMAX_API_KEY']
+}, {
+  value: 'kimi',
+  name: 'Kimi',
+  detail: 'Moonshot AI · moonshot-v1-8k',
+  baseUrl: 'https://api.moonshot.cn/v1',
+  model: 'moonshot-v1-8k',
+  apiKeyEnvNames: ['KIMI_API_KEY', 'MOONSHOT_API_KEY']
+}, {
+  value: 'qwen',
+  name: 'Qwen',
+  detail: 'DashScope compatible mode',
+  baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+  model: 'qwen-plus',
+  apiKeyEnvNames: ['QWEN_API_KEY', 'DASHSCOPE_API_KEY']
+}, {
+  value: 'custom',
+  name: 'Add provider',
+  detail: 'Save a new OpenAI-compatible provider',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-4o-mini',
+  apiKeyEnvNames: ['OPENAI_API_KEY']
+}];
+const OPENAI_COMPAT_PROVIDER_MAP = new Map(OPENAI_COMPAT_PROVIDERS.map(provider => [provider.value, provider]));
+const OPENAI_COMPAT_PROVIDER_REGISTRY_ENV = 'OPENAI_COMPAT_PROVIDERS';
+function ModelPickerWrapper({
+  onDone
+}: {
+  onDone: ModelCommandDone;
+}): React.ReactNode {
+  const [view, setView] = React.useState<'model' | 'provider'>('model');
+  const mainLoopModel = useAppState(_temp);
+  const mainLoopModelForSession = useAppState(_temp2);
+  const isFastMode = useAppState(_temp3);
+  const setAppState = useSetAppState();
+  const isOpenAICompat = isOpenAICompatEnabled();
+  if (isOpenAICompat && view === 'provider') {
+    return <OpenAICompatProviderPicker onDone={onDone} onBackToModels={() => setView('model')} />;
+  }
+
+  function handleCancel(): void {
+    logEvent("tengu_model_command_menu", {
+      action: "cancel" as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    const displayModel = renderModelLabel(mainLoopModel);
+    onDone(`Kept model as ${chalk.bold(displayModel)}`, {
+      display: "system"
+    });
+  }
+
+  function handleSelect(model: string | null, effort: EffortLevel | undefined): void {
+    logEvent("tengu_model_command_menu", {
+      action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      from_model: mainLoopModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      to_model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    setAppState(prev => ({
+      ...prev,
+      mainLoopModel: model,
+      mainLoopModelForSession: null
+    }));
+    let message = `Set model to ${chalk.bold(renderModelLabel(model))}`;
+    if (effort !== undefined) {
+      message = message + ` with ${chalk.bold(effort)} effort`;
+    }
+    let wasFastModeToggledOn = undefined;
+    if (isFastModeEnabled()) {
+      clearFastModeCooldown();
+      if (!isFastModeSupportedByModel(model) && isFastMode) {
+        setAppState(_temp4);
+        wasFastModeToggledOn = false;
+      } else if (isFastModeSupportedByModel(model) && isFastModeAvailable() && isFastMode) {
+        message = message + " \xB7 Fast mode ON";
+        wasFastModeToggledOn = true;
+      }
+    }
+    if (isBilledAsExtraUsage(model, wasFastModeToggledOn === true, isOpus1mMergeEnabled())) {
+      message = message + " \xB7 Billed as extra usage";
+    }
+    if (wasFastModeToggledOn === false) {
+      message = message + " \xB7 Fast mode OFF";
+    }
+    onDone(message);
+  }
+
+  const showFastModeNotice = isFastModeEnabled() && isFastMode && isFastModeSupportedByModel(mainLoopModel) && isFastModeAvailable();
+  return <ModelPicker initial={mainLoopModel} sessionModel={mainLoopModelForSession} onSelect={handleSelect} onCancel={handleCancel} isStandaloneCommand={true} showFastModeNotice={showFastModeNotice} onChangeProvider={isOpenAICompat ? () => {
+    logEvent("tengu_model_command_menu", {
+      action: "change_provider" as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    setView('provider');
+  } : undefined} />;
+}
+function OpenAICompatProviderPicker({
+  onDone,
+  onBackToModels
+}: {
+  onDone: ModelCommandDone;
+  onBackToModels: () => void;
+}): React.ReactNode {
+  const setAppState = useSetAppState();
+  const textInputColumns = Math.max(20, useTerminalSize().columns - 18);
+  const [pickerState, setPickerState] = React.useState<ProviderPickerState>({
+    state: 'idle'
+  });
+  const [providerName, setProviderName] = React.useState(getOpenAICompatEnv('OPENAI_PROVIDER_NAME') || '');
+  const [providerNameCursorOffset, setProviderNameCursorOffset] = React.useState(providerName.length);
+  const [providerBaseUrl, setProviderBaseUrl] = React.useState(getOpenAICompatEnv('OPENAI_BASE_URL') || '');
+  const [providerBaseUrlCursorOffset, setProviderBaseUrlCursorOffset] = React.useState(providerBaseUrl.length);
+  const [providerApiKey, setProviderApiKey] = React.useState(getOpenAICompatEnv('OPENAI_API_KEY') || '');
+  const [providerApiKeyCursorOffset, setProviderApiKeyCursorOffset] = React.useState(providerApiKey.length);
+  const currentProviderName = getOpenAICompatEnv('OPENAI_PROVIDER_NAME');
+  const providerOptions = React.useMemo(() => getProviderPickerOptions().map(provider => ({
+    label: <Text>{provider.name}{currentProviderName === provider.name ? " ✓" : ""}{" "}<Text dimColor={true}>{provider.detail}</Text></Text>,
+    value: provider.value
+  })), [currentProviderName]);
+
+  function handleProviderSelect(value: string): void {
+    const provider = resolveOpenAICompatProvider(value);
+    if (!provider) {
+      return;
+    }
+    logEvent("tengu_openai_compat_provider_selected", {
+      provider: provider.value as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    const initialName = provider.value === 'custom' ? '' : provider.name;
+    setProviderName(initialName);
+    setProviderNameCursorOffset(initialName.length);
+    setProviderBaseUrl(provider.baseUrl);
+    setProviderBaseUrlCursorOffset(provider.baseUrl.length);
+    const initialApiKey = provider.value === 'custom' ? '' : getProviderApiKeyForSetup(provider) || '';
+    setProviderApiKey(initialApiKey);
+    setProviderApiKeyCursorOffset(initialApiKey.length);
+    setPickerState({
+      state: provider.value === 'custom' ? 'configure_name' : 'configure_url',
+      provider
+    });
+  }
+
+  function handleProviderConfigured(provider: OpenAICompatProvider, baseUrl: string, apiKey: string, selectedModels: string[]): void {
+    try {
+      const model = configureOpenAICompatProvider(provider, baseUrl, apiKey, selectedModels);
+      setAppState(prev => ({
+        ...prev,
+        mainLoopModel: model,
+        mainLoopModelForSession: null
+      }));
+      onBackToModels();
+    } catch (error) {
+      setPickerState({
+        state: 'error',
+        message: (error as Error).message,
+        toRetry: {
+          state: 'select_models',
+          provider,
+          baseUrl,
+          apiKey,
+          models: selectedModels
+        }
+      });
+    }
+  }
+
+  let content: React.ReactNode;
+  switch (pickerState.state) {
+    case 'idle':
+      content = <><Box marginBottom={1} flexDirection="column"><Text color="remember" bold={true}>Select provider</Text><Text dimColor={true}>Choose an OpenAI-compatible provider, then return to model selection.</Text></Box><Box flexDirection="column" marginBottom={1}><Select options={providerOptions} onChange={handleProviderSelect} onCancel={onBackToModels} /></Box><Text dimColor={true} italic={true}>Enter to confirm · Esc to return</Text></>;
+      break;
+    case 'configure_name':
+      content = <Box flexDirection="column" gap={1}><Text bold={true}>Add provider</Text><Text dimColor={true}>Give this provider a display name for your saved configuration.</Text><Box><Text>Provider Name: </Text><TextInput value={providerName} onChange={value => {
+        setProviderName(value);
+        setProviderNameCursorOffset(value.length);
+      }} onSubmit={value => {
+        const name = value.trim();
+        if (!name) return;
+        setPickerState({
+          state: 'configure_url',
+          provider: createCustomOpenAICompatProvider(name)
+        });
+      }} cursorOffset={providerNameCursorOffset} onChangeCursorOffset={setProviderNameCursorOffset} columns={textInputColumns} focus={true} showCursor={true} /></Box></Box>;
+      break;
+    case 'configure_url':
+      content = <Box flexDirection="column" gap={1}><Text bold={true}>Configure {pickerState.provider.name} · <Text dimColor={true}>{pickerState.provider.model}</Text></Text><Text dimColor={true}>Press Enter to accept or edit the provider URL.</Text><Box><Text>Base URL: </Text><TextInput value={providerBaseUrl} onChange={value => {
+        setProviderBaseUrl(value);
+        setProviderBaseUrlCursorOffset(value.length);
+      }} onSubmit={value => {
+        const baseUrl = value.trim();
+        if (!baseUrl) return;
+        setPickerState({
+          state: 'configure_api_key',
+          provider: pickerState.provider,
+          baseUrl
+        });
+      }} cursorOffset={providerBaseUrlCursorOffset} onChangeCursorOffset={setProviderBaseUrlCursorOffset} columns={textInputColumns} focus={true} showCursor={true} /></Box></Box>;
+      break;
+    case 'configure_api_key':
+      content = <Box flexDirection="column" gap={1}><Text bold={true}>API key for {pickerState.provider.name} · <Text dimColor={true}>{pickerState.baseUrl}</Text></Text><Text dimColor={true}>This will be saved to your user settings.</Text><Box><Text>API Key: </Text><TextInput value={providerApiKey} onChange={value => {
+        setProviderApiKey(value);
+        setProviderApiKeyCursorOffset(value.length);
+      }} onSubmit={value => {
+        const apiKey = value.trim();
+        if (!apiKey) return;
+        const {
+          provider,
+          baseUrl
+        } = pickerState;
+        setPickerState({
+          state: 'loading_models',
+          provider,
+          baseUrl,
+          apiKey
+        });
+        void fetchOpenAICompatModels(baseUrl, apiKey).then(models => {
+          setPickerState({
+            state: 'select_models',
+            provider,
+            baseUrl,
+            apiKey,
+            models: models.length ? models : [provider.model]
+          });
+        }).catch(error => {
+          setPickerState({
+            state: 'error',
+            message: (error as Error).message,
+            toRetry: {
+              state: 'configure_api_key',
+              provider,
+              baseUrl
+            }
+          });
+        });
+      }} cursorOffset={providerApiKeyCursorOffset} onChangeCursorOffset={setProviderApiKeyCursorOffset} columns={textInputColumns} mask="*" focus={true} showCursor={true} /></Box></Box>;
+      break;
+    case 'loading_models':
+      content = <Box flexDirection="column" gap={1}><Text bold={true}>Fetching models from {pickerState.provider.name}</Text><Box><Spinner /><Text>Calling {normalizeOpenAICompatBaseUrl(pickerState.baseUrl)}/models...</Text></Box></Box>;
+      break;
+    case 'select_models':
+      content = <OpenAICompatModelMultiSelect provider={pickerState.provider} baseUrl={pickerState.baseUrl} apiKey={pickerState.apiKey} models={pickerState.models} onCancel={() => setPickerState({
+        state: 'configure_api_key',
+        provider: pickerState.provider,
+        baseUrl: pickerState.baseUrl
+      })} onSubmit={selectedModels => handleProviderConfigured(pickerState.provider, pickerState.baseUrl, pickerState.apiKey, selectedModels)} />;
+      break;
+    case 'error':
+      content = <Box flexDirection="column" gap={1}><Text color="error">Provider setup failed: {pickerState.message}</Text><Text dimColor={true}>Press Enter to retry.</Text><Select hideIndexes={true} options={[{
+        label: 'Retry',
+        value: 'retry'
+      }, {
+        label: 'Back to providers',
+        value: 'back'
+      }]} onChange={value => {
+        if (value === 'retry') {
+          setPickerState(pickerState.toRetry);
+        } else {
+          setPickerState({
+            state: 'idle'
+          });
+        }
+      }} onCancel={() => setPickerState({
+        state: 'idle'
+      })} /></Box>;
+      break;
+  }
+
+  return <Pane color="permission"><Box flexDirection="column">{content}</Box></Pane>;
+}
+function resolveOpenAICompatProvider(value: string): OpenAICompatProvider | undefined {
+  const provider = getProviderPickerOptions().find(candidate => candidate.value === value) ?? OPENAI_COMPAT_PROVIDER_MAP.get(value);
+  if (!provider) {
+    return undefined;
+  }
+  if (provider.value !== 'custom') {
+    return provider;
+  }
+  return provider;
+}
+function getProviderApiKeyFromEnv(provider: OpenAICompatProvider): string | undefined {
+  return provider.apiKeyEnvNames.map(getOpenAICompatEnv).find(Boolean);
+}
+function getProviderApiKeyForSetup(provider: OpenAICompatProvider): string | undefined {
+  const providerSpecificKey = getProviderApiKeyFromEnv(provider);
+  if (providerSpecificKey) {
+    return providerSpecificKey;
+  }
+  if (isActiveOpenAICompatProvider(provider)) {
+    return getOpenAICompatEnv('OPENAI_API_KEY');
+  }
+  return undefined;
+}
+function isActiveOpenAICompatProvider(provider: OpenAICompatProvider): boolean {
+  const activeName = getOpenAICompatEnv('OPENAI_PROVIDER_NAME');
+  const activeBaseUrl = getOpenAICompatEnv('OPENAI_BASE_URL');
+  return (!!activeName && activeName === provider.name) || (!!activeBaseUrl && activeBaseUrl === provider.baseUrl);
+}
+function getPrimaryProviderApiKeyEnvName(provider: OpenAICompatProvider): string | undefined {
+  return provider.apiKeyEnvNames.find(envName => envName !== 'OPENAI_API_KEY');
+}
+function getSaveableProviderApiKeyEnvName(provider: OpenAICompatProvider): string {
+  return getPrimaryProviderApiKeyEnvName(provider) || getCustomProviderApiKeyEnvName(provider.name);
+}
+function getCustomProviderApiKeyEnvName(name: string): string {
+  const suffix = name.toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return `OPENAI_COMPAT_${suffix || 'CUSTOM'}_API_KEY`;
+}
+function createCustomOpenAICompatProvider(name: string): OpenAICompatProvider {
+  return {
+    ...OPENAI_COMPAT_PROVIDER_MAP.get('custom')!,
+    value: `custom:${name}`,
+    name,
+    apiKeyEnvNames: [getCustomProviderApiKeyEnvName(name)]
+  };
+}
+function isBuiltinOpenAICompatProvider(provider: OpenAICompatProvider): boolean {
+  return OPENAI_COMPAT_PROVIDERS.some(candidate => candidate.value !== 'custom' && (candidate.name === provider.name || candidate.baseUrl === provider.baseUrl));
+}
+function isSameOpenAICompatProvider(left: Pick<OpenAICompatProvider, 'name' | 'baseUrl'>, right: Pick<OpenAICompatProvider, 'name' | 'baseUrl'>): boolean {
+  return left.name === right.name || normalizeOpenAICompatBaseUrl(left.baseUrl) === normalizeOpenAICompatBaseUrl(right.baseUrl);
+}
+function coerceSavedOpenAICompatProvider(value: unknown): SavedOpenAICompatProvider | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.name !== 'string' || typeof record.baseUrl !== 'string') {
+    return undefined;
+  }
+  const name = record.name.trim();
+  const baseUrl = normalizeOpenAICompatBaseUrl(record.baseUrl);
+  if (!name || !baseUrl) {
+    return undefined;
+  }
+  const models = Array.isArray(record.models) ? record.models.filter((model): model is string => typeof model === 'string' && !!model.trim()).map(model => model.trim()) : [];
+  const model = typeof record.model === 'string' && record.model.trim() ? record.model.trim() : models[0] || 'gpt-4o-mini';
+  const apiKeyEnvName = typeof record.apiKeyEnvName === 'string' && record.apiKeyEnvName.trim() ? record.apiKeyEnvName.trim() : getCustomProviderApiKeyEnvName(name);
+  return {
+    name,
+    baseUrl,
+    model,
+    models: models.length ? models : [model],
+    apiKeyEnvName
+  };
+}
+function parseSavedOpenAICompatProviders(raw: string | undefined): SavedOpenAICompatProvider[] {
+  if (!raw?.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.map(coerceSavedOpenAICompatProvider).filter((provider): provider is SavedOpenAICompatProvider => !!provider);
+  } catch {
+    return [];
+  }
+}
+function getSavedOpenAICompatProviders(): SavedOpenAICompatProvider[] {
+  return parseSavedOpenAICompatProviders(getOpenAICompatEnv(OPENAI_COMPAT_PROVIDER_REGISTRY_ENV));
+}
+function savedProviderToPickerOption(provider: SavedOpenAICompatProvider, index: number): OpenAICompatProvider {
+  return {
+    value: `saved:${index}:${provider.name}`,
+    name: provider.name,
+    detail: `${provider.model} · ${provider.baseUrl}`,
+    baseUrl: provider.baseUrl,
+    model: provider.model,
+    models: provider.models,
+    apiKeyEnvNames: [provider.apiKeyEnvName]
+  };
+}
+function upsertSavedOpenAICompatProvider(providers: SavedOpenAICompatProvider[], provider: SavedOpenAICompatProvider): SavedOpenAICompatProvider[] {
+  const existingIndex = providers.findIndex(candidate => candidate.name === provider.name || normalizeOpenAICompatBaseUrl(candidate.baseUrl) === normalizeOpenAICompatBaseUrl(provider.baseUrl));
+  if (existingIndex === -1) {
+    return [provider, ...providers];
+  }
+  const nextProviders = [...providers];
+  nextProviders[existingIndex] = provider;
+  return nextProviders;
+}
+function createSavedOpenAICompatProvider(provider: OpenAICompatProvider, baseUrl: string, model: string, models: string[], apiKeyEnvName: string): SavedOpenAICompatProvider {
+  return {
+    name: provider.name,
+    baseUrl: normalizeOpenAICompatBaseUrl(baseUrl),
+    model,
+    models: models.length ? models : [model],
+    apiKeyEnvName
+  };
+}
+function getConfiguredOpenAICompatProvider(): OpenAICompatProvider | undefined {
+  const name = getOpenAICompatEnv('OPENAI_PROVIDER_NAME');
+  const baseUrl = getOpenAICompatEnv('OPENAI_BASE_URL');
+  if (!name || !baseUrl) {
+    return undefined;
+  }
+  const matchesBuiltin = OPENAI_COMPAT_PROVIDERS.some(provider => provider.value !== 'custom' && (provider.name === name || provider.baseUrl === baseUrl));
+  if (matchesBuiltin) {
+    return undefined;
+  }
+  const savedProvider = getSavedOpenAICompatProviders().find(provider => provider.name === name || provider.baseUrl === baseUrl);
+  return {
+    value: `configured:${name}`,
+    name,
+    detail: `${getOpenAICompatEnv('OPENAI_MODEL') || 'OpenAI-compatible'} · ${baseUrl}`,
+    baseUrl,
+    model: getOpenAICompatEnv('OPENAI_MODEL') || 'gpt-4o-mini',
+    models: parseOpenAICompatModelList(getOpenAICompatEnv('OPENAI_AVAILABLE_MODELS')),
+    apiKeyEnvNames: [savedProvider?.apiKeyEnvName || getCustomProviderApiKeyEnvName(name), 'OPENAI_API_KEY']
+  };
+}
+function getOpenAICompatEnv(name: string): string | undefined {
+  const settingsValue = getSettings_DEPRECATED()?.env?.[name];
+  if (typeof settingsValue === 'string' && settingsValue.trim()) {
+    return settingsValue.trim();
+  }
+  const processValue = process.env[name]?.trim();
+  return processValue || undefined;
+}
+function getProviderPickerOptions(): OpenAICompatProvider[] {
+  const savedProviders = getSavedOpenAICompatProviders().filter(provider => !OPENAI_COMPAT_PROVIDERS.some(candidate => candidate.value !== 'custom' && (candidate.name === provider.name || normalizeOpenAICompatBaseUrl(candidate.baseUrl) === normalizeOpenAICompatBaseUrl(provider.baseUrl)))).map(savedProviderToPickerOption);
+  const configuredProvider = getConfiguredOpenAICompatProvider();
+  const customProviders = configuredProvider && !savedProviders.some(provider => isSameOpenAICompatProvider(provider, configuredProvider)) ? [configuredProvider, ...savedProviders] : savedProviders;
+  if (!customProviders.length) {
+    return OPENAI_COMPAT_PROVIDERS;
+  }
+  return [...customProviders, ...OPENAI_COMPAT_PROVIDERS];
+}
+function normalizeOpenAICompatBaseUrl(baseUrl: string): string {
+  return baseUrl.trim().replace(/\/+$/, '');
+}
+function coerceOpenAIModelId(model: unknown): string | undefined {
+  if (typeof model === 'string') {
+    return model.trim() || undefined;
+  }
+  if (model && typeof model === 'object' && 'id' in model && typeof model.id === 'string') {
+    return model.id.trim() || undefined;
+  }
+  return undefined;
+}
+function extractOpenAICompatModels(payload: unknown): string[] {
+  const candidates = payload && typeof payload === 'object' && 'data' in payload ? (payload as {
+    data?: unknown;
+  }).data : payload && typeof payload === 'object' && 'models' in payload ? (payload as {
+    models?: unknown;
+  }).models : payload;
+  if (!Array.isArray(candidates)) {
+    return [];
+  }
+  return Array.from(new Set(candidates.map(coerceOpenAIModelId).filter((model): model is string => !!model))).sort((a, b) => a.localeCompare(b));
+}
+async function fetchOpenAICompatModels(baseUrl: string, apiKey: string): Promise<string[]> {
+  const endpoint = `${normalizeOpenAICompatBaseUrl(baseUrl)}/models`;
+  const response = await fetch(endpoint, {
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      Accept: 'application/json'
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Failed to fetch models from ${endpoint}: HTTP ${response.status}`);
+  }
+  return extractOpenAICompatModels(await response.json());
+}
+function parseOpenAICompatModelList(raw: string | undefined): string[] {
+  if (!raw?.trim()) {
+    return [];
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((model): model is string => typeof model === 'string');
+    }
+  } catch {}
+  return raw.split(',').map(model => model.trim()).filter(Boolean);
+}
+function configureOpenAICompatProvider(provider: OpenAICompatProvider, baseUrl: string, apiKey: string, selectedModels: string[]): string {
+  const modelsList = selectedModels.length ? selectedModels : [provider.model];
+  const model = modelsList.includes(provider.model) ? provider.model : modelsList[0]!;
+  const models = JSON.stringify(modelsList);
+  const currentSettings = getSettings_DEPRECATED() || {};
+  let savedProviders = parseSavedOpenAICompatProviders(typeof currentSettings.env?.[OPENAI_COMPAT_PROVIDER_REGISTRY_ENV] === 'string' ? currentSettings.env[OPENAI_COMPAT_PROVIDER_REGISTRY_ENV] : process.env[OPENAI_COMPAT_PROVIDER_REGISTRY_ENV]);
+  const previousProvider = getConfiguredOpenAICompatProvider();
+  const previousApiKey = getOpenAICompatEnv('OPENAI_API_KEY');
+  const previousModel = getOpenAICompatEnv('OPENAI_MODEL') || previousProvider?.model || 'gpt-4o-mini';
+  const previousModels = parseOpenAICompatModelList(getOpenAICompatEnv('OPENAI_AVAILABLE_MODELS'));
+  const nextEnv: Record<string, string> = {
+    ...(currentSettings.env || {})
+  };
+  if (previousProvider && !isBuiltinOpenAICompatProvider(previousProvider)) {
+    const previousApiKeyEnvName = getSaveableProviderApiKeyEnvName(previousProvider);
+    savedProviders = upsertSavedOpenAICompatProvider(savedProviders, createSavedOpenAICompatProvider(previousProvider, previousProvider.baseUrl, previousModel, previousModels.length ? previousModels : [previousModel], previousApiKeyEnvName));
+    if (previousApiKey) {
+      process.env[previousApiKeyEnvName] = previousApiKey;
+      nextEnv[previousApiKeyEnvName] = previousApiKey;
+    }
+  }
+  process.env.CLOSE_CODE_USE_OPENAI_COMPAT = '1';
+  process.env.CLAUDE_CODE_USE_OPENAI_COMPAT = '1';
+  process.env.OPENAI_PROVIDER_NAME = provider.name;
+  process.env.OPENAI_BASE_URL = baseUrl;
+  process.env.OPENAI_MODEL = model;
+  process.env.OPENAI_AVAILABLE_MODELS = models;
+  process.env.OPENAI_API_KEY = apiKey;
+  const providerApiKeyEnvName = getSaveableProviderApiKeyEnvName(provider);
+  if (providerApiKeyEnvName) {
+    process.env[providerApiKeyEnvName] = apiKey;
+  }
+  if (!isBuiltinOpenAICompatProvider(provider)) {
+    savedProviders = upsertSavedOpenAICompatProvider(savedProviders, createSavedOpenAICompatProvider(provider, baseUrl, model, modelsList, providerApiKeyEnvName));
+  }
+  const registry = JSON.stringify(savedProviders);
+  process.env[OPENAI_COMPAT_PROVIDER_REGISTRY_ENV] = registry;
+  Object.assign(nextEnv, {
+    CLOSE_CODE_USE_OPENAI_COMPAT: '1',
+    CLAUDE_CODE_USE_OPENAI_COMPAT: '1',
+    OPENAI_PROVIDER_NAME: provider.name,
+    OPENAI_BASE_URL: baseUrl,
+    OPENAI_MODEL: model,
+    OPENAI_AVAILABLE_MODELS: models,
+    OPENAI_API_KEY: apiKey,
+    [OPENAI_COMPAT_PROVIDER_REGISTRY_ENV]: registry
+  });
+  if (providerApiKeyEnvName) {
+    nextEnv[providerApiKeyEnvName] = apiKey;
+  }
+  const {
+    error
+  } = updateSettingsForSource('userSettings', {
+    model: undefined,
+    env: nextEnv
+  });
+  if (error) {
+    throw error;
+  }
+  return model;
+}
+function OpenAICompatModelMultiSelect({
+  provider,
+  baseUrl,
+  apiKey,
+  models,
+  onCancel,
+  onSubmit
+}: {
+  provider: OpenAICompatProvider;
+  baseUrl: string;
+  apiKey: string;
+  models: string[];
+  onCancel: () => void;
+  onSubmit: (selectedModels: string[]) => void;
+}): React.ReactNode {
+  const initialSelectedModels = React.useMemo(() => {
+    const configuredModels = parseOpenAICompatModelList(getOpenAICompatEnv('OPENAI_AVAILABLE_MODELS'));
+    const modelSet = new Set(models);
+    const selected = configuredModels.filter(model => modelSet.has(model));
+    return selected.length ? selected : models;
+  }, [models]);
+  const [focusedIndex, setFocusedIndex] = React.useState(0);
+  const [selectedModels, setSelectedModels] = React.useState(initialSelectedModels);
+  const visibleCount = Math.min(10, models.length);
+  const visibleFromIndex = Math.min(Math.max(0, focusedIndex - visibleCount + 1), Math.max(0, models.length - visibleCount));
+  const visibleModels = models.slice(visibleFromIndex, visibleFromIndex + visibleCount);
+  useInput((input, key) => {
+    if (key.escape) {
+      onCancel();
+      return;
+    }
+    if (key.return) {
+      onSubmit(selectedModels.length ? selectedModels : [provider.model]);
+      return;
+    }
+    if (key.downArrow || input === 'j') {
+      setFocusedIndex(index => Math.min(index + 1, models.length - 1));
+      return;
+    }
+    if (key.upArrow || input === 'k') {
+      setFocusedIndex(index => Math.max(index - 1, 0));
+      return;
+    }
+    if (input.toLowerCase() === 'x') {
+      const model = models[focusedIndex];
+      if (!model) return;
+      setSelectedModels(previous => previous.includes(model) ? previous.filter(value => value !== model) : [...previous, model]);
+    }
+  });
+  return <Box flexDirection="column" gap={1}><Text bold={true}>Select models for {provider.name}</Text><Text dimColor={true}>Press x to select or unselect models. Press Enter when finished.</Text><Text dimColor={true}>Base URL: {normalizeOpenAICompatBaseUrl(baseUrl)} · Key: {apiKey ? 'set' : 'missing'}</Text><Box flexDirection="column">{visibleModels.map((model, index) => {
+      const absoluteIndex = visibleFromIndex + index;
+      const isFocused = absoluteIndex === focusedIndex;
+      const isSelected = selectedModels.includes(model);
+      return <Box key={model} gap={1}><Text color={isFocused ? "suggestion" : undefined}>{isFocused ? "›" : " "}</Text><Text dimColor={true}>{`${absoluteIndex + 1}.`.padEnd(3)}</Text><Text color={isSelected ? "success" : undefined}>[{isSelected ? "x" : " "}]</Text><Text color={isFocused ? "suggestion" : undefined}>{model}</Text></Box>;
+    })}</Box>{visibleFromIndex > 0 && <Text dimColor={true}>{visibleFromIndex} more above...</Text>}{visibleFromIndex + visibleCount < models.length && <Text dimColor={true}>{models.length - visibleFromIndex - visibleCount} more below...</Text>}<Text dimColor={true} italic={true}>x to toggle · Enter to continue · Esc to edit key</Text></Box>;
+}
+function _temp4(prev_0) {
+  return {
+    ...prev_0,
+    fastMode: false
+  };
+}
+function _temp3(s_1) {
+  return s_1.fastMode;
+}
+function _temp2(s_0) {
+  return s_0.mainLoopModelForSession;
+}
+function _temp(s) {
+  return s.mainLoopModel;
+}
+function SetModelAndClose({
+  args,
+  onDone
+}: {
+  args: string;
+  onDone: (result?: string, options?: {
+    display?: CommandResultDisplay;
+  }) => void;
+}): React.ReactNode {
+  const isFastMode = useAppState(s => s.fastMode);
+  const setAppState = useSetAppState();
+  const model = args === 'default' ? null : args;
+  React.useEffect(() => {
+    async function handleModelChange(): Promise<void> {
+      if (model && !isModelAllowed(model)) {
+        onDone(`Model '${model}' is not available. Your organization restricts model selection.`, {
+          display: 'system'
+        });
+        return;
+      }
+
+      // @[MODEL LAUNCH]: Update check for 1M access.
+      if (model && isOpus1mUnavailable(model)) {
+        onDone(`Opus 4.6 with 1M context is not available for your account. Learn more: https://github.com/aimsl/close-code`, {
+          display: 'system'
+        });
+        return;
+      }
+      if (model && isSonnet1mUnavailable(model)) {
+        onDone(`Sonnet 4.6 with 1M context is not available for your account. Learn more: https://github.com/aimsl/close-code`, {
+          display: 'system'
+        });
+        return;
+      }
+
+      // Skip validation for default model
+      if (!model) {
+        setModel(null);
+        return;
+      }
+
+      if (isOpenAICompatEnabled()) {
+        setModel(model);
+        return;
+      }
+
+      // Skip validation for known aliases - they're predefined and should work
+      if (isKnownAlias(model)) {
+        setModel(model);
+        return;
+      }
+
+      // Validate and set custom model
+      try {
+        // Don't use parseUserSpecifiedModel for non-aliases since it lowercases the input
+        // and model names are case-sensitive
+        const {
+          valid,
+          error: error_0
+        } = await validateModel(model);
+        if (valid) {
+          setModel(model);
+        } else {
+          onDone(error_0 || `Model '${model}' not found`, {
+            display: 'system'
+          });
+        }
+      } catch (error) {
+        onDone(`Failed to validate model: ${(error as Error).message}`, {
+          display: 'system'
+        });
+      }
+    }
+    function setModel(modelValue: string | null): void {
+      setAppState(prev => ({
+        ...prev,
+        mainLoopModel: modelValue,
+        mainLoopModelForSession: null
+      }));
+      let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`;
+      let wasFastModeToggledOn = undefined;
+      if (isFastModeEnabled()) {
+        clearFastModeCooldown();
+        if (!isFastModeSupportedByModel(modelValue) && isFastMode) {
+          setAppState(prev_0 => ({
+            ...prev_0,
+            fastMode: false
+          }));
+          wasFastModeToggledOn = false;
+          // Do not update fast mode in settings since this is an automatic downgrade
+        } else if (isFastModeSupportedByModel(modelValue) && isFastMode) {
+          message += ` · Fast mode ON`;
+          wasFastModeToggledOn = true;
+        }
+      }
+      if (isBilledAsExtraUsage(modelValue, wasFastModeToggledOn === true, isOpus1mMergeEnabled())) {
+        message += ` · Billed as extra usage`;
+      }
+      if (wasFastModeToggledOn === false) {
+        // Fast mode was toggled off, show suffix after extra usage billing
+        message += ` · Fast mode OFF`;
+      }
+      onDone(message);
+    }
+    void handleModelChange();
+  }, [model, onDone, setAppState]);
+  return null;
+}
+function isKnownAlias(model: string): boolean {
+  return (MODEL_ALIASES as readonly string[]).includes(model.toLowerCase().trim());
+}
+function isOpus1mUnavailable(model: string): boolean {
+  const m = model.toLowerCase();
+  return !checkOpus1mAccess() && !isOpus1mMergeEnabled() && m.includes('opus') && m.includes('[1m]');
+}
+function isSonnet1mUnavailable(model: string): boolean {
+  const m = model.toLowerCase();
+  // Warn about Sonnet and Sonnet 4.6, but not Sonnet 4.5 since that had
+  // a different access criteria.
+  return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]'));
+}
+function ShowModelAndClose(t0) {
+  const {
+    onDone
+  } = t0;
+  const mainLoopModel = useAppState(_temp7);
+  const mainLoopModelForSession = useAppState(_temp8);
+  const effortValue = useAppState(_temp9);
+  const displayModel = renderModelLabel(mainLoopModel);
+  const effortInfo = effortValue !== undefined ? ` (effort: ${effortValue})` : "";
+  if (mainLoopModelForSession) {
+    onDone(`Current model: ${chalk.bold(renderModelLabel(mainLoopModelForSession))} (session override from plan mode)\nBase model: ${displayModel}${effortInfo}`);
+  } else {
+    onDone(`Current model: ${displayModel}${effortInfo}`);
+  }
+  return null;
+}
+function _temp9(s_1) {
+  return s_1.effortValue;
+}
+function _temp8(s_0) {
+  return s_0.mainLoopModelForSession;
+}
+function _temp7(s) {
+  return s.mainLoopModel;
+}
+export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+  args = args?.trim() || '';
+  if (COMMON_INFO_ARGS.includes(args)) {
+    logEvent('tengu_model_command_inline_help', {
+      args: args as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    return <ShowModelAndClose onDone={onDone} />;
+  }
+  if (COMMON_HELP_ARGS.includes(args)) {
+    onDone('Run /model to open the model selection menu, or /model [modelName] to set the model.', {
+      display: 'system'
+    });
+    return;
+  }
+  if (args) {
+    logEvent('tengu_model_command_inline', {
+      args: args as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    });
+    return <SetModelAndClose args={args} onDone={onDone} />;
+  }
+  return <ModelPickerWrapper onDone={onDone} />;
+};
+function renderModelLabel(model: string | null): string {
+  const rendered = renderDefaultModelSetting(model ?? getDefaultMainLoopModelSetting());
+  return model === null ? `${rendered} (default)` : rendered;
+}
+//# sourceMappingURL=data:application/json;charset=utf-8;base64,eyJ2ZXJzaW9uIjozLCJuYW1lcyI6WyJjaGFsayIsIlJlYWN0IiwiQ29tbWFuZFJlc3VsdERpc3BsYXkiLCJNb2RlbFBpY2tlciIsIkNPTU1PTl9IRUxQX0FSR1MiLCJDT01NT05fSU5GT19BUkdTIiwiQW5hbHl0aWNzTWV0YWRhdGFfSV9WRVJJRklFRF9USElTX0lTX05PVF9DT0RFX09SX0ZJTEVQQVRIUyIsImxvZ0V2ZW50IiwidXNlQXBwU3RhdGUiLCJ1c2VTZXRBcHBTdGF0ZSIsIkxvY2FsSlNYQ29tbWFuZENhbGwiLCJFZmZvcnRMZXZlbCIsImlzQmlsbGVkQXNFeHRyYVVzYWdlIiwiY2xlYXJGYXN0TW9kZUNvb2xkb3duIiwiaXNGYXN0TW9kZUF2YWlsYWJsZSIsImlzRmFzdE1vZGVFbmFibGVkIiwiaXNGYXN0TW9kZVN1cHBvcnRlZEJ5TW9kZWwiLCJNT0RFTF9BTElBU0VTIiwiY2hlY2tPcHVzMW1BY2Nlc3MiLCJjaGVja1Nvbm5ldDFtQWNjZXNzIiwiZ2V0RGVmYXVsdE1haW5Mb29wTW9kZWxTZXR0aW5nIiwiaXNPcHVzMW1NZXJnZUVuYWJsZWQiLCJyZW5kZXJEZWZhdWx0TW9kZWxTZXR0aW5nIiwiaXNNb2RlbEFsbG93ZWQiLCJ2YWxpZGF0ZU1vZGVsIiwiTW9kZWxQaWNrZXJXcmFwcGVyIiwidDAiLCIkIiwiX2MiLCJvbkRvbmUiLCJtYWluTG9vcE1vZGVsIiwiX3RlbXAiLCJtYWluTG9vcE1vZGVsRm9yU2Vzc2lvbiIsIl90ZW1wMiIsImlzRmFzdE1vZGUiLCJfdGVtcDMiLCJzZXRBcHBTdGF0ZSIsInQxIiwiaGFuZGxlQ2FuY2VsIiwiYWN0aW9uIiwiZGlzcGxheU1vZGVsIiwicmVuZGVyTW9kZWxMYWJlbCIsImJvbGQiLCJkaXNwbGF5IiwidDIiLCJoYW5kbGVTZWxlY3QiLCJtb2RlbCIsImVmZm9ydCIsImZyb21fbW9kZWwiLCJ0b19tb2RlbCIsInByZXYiLCJtZXNzYWdlIiwidW5kZWZpbmVkIiwid2FzRmFzdE1vZGVUb2dnbGVkT24iLCJfdGVtcDQiLCJ0MyIsInQ0IiwicHJldl8wIiwiZmFzdE1vZGUiLCJzXzEiLCJzIiwic18wIiwiU2V0TW9kZWxBbmRDbG9zZSIsImFyZ3MiLCJyZXN1bHQiLCJvcHRpb25zIiwiUmVhY3ROb2RlIiwidXNlRWZmZWN0IiwiaGFuZGxlTW9kZWxDaGFuZ2UiLCJQcm9taXNlIiwiaXNPcHVzMW1VbmF2YWlsYWJsZSIsImlzU29ubmV0MW1VbmF2YWlsYWJsZSIsInNldE1vZGVsIiwiaXNLbm93bkFsaWFzIiwidmFsaWQiLCJlcnJvciIsIkVycm9yIiwibW9kZWxWYWx1ZSIsImluY2x1ZGVzIiwidG9Mb3dlckNhc2UiLCJ0cmltIiwibSIsIlNob3dNb2RlbEFuZENsb3NlIiwiX3RlbXA3IiwiX3RlbXA4IiwiZWZmb3J0VmFsdWUiLCJfdGVtcDkiLCJlZmZvcnRJbmZvIiwiY2FsbCIsIl9jb250ZXh0IiwicmVuZGVyZWQiXSwic291cmNlcyI6WyJtb2RlbC50c3giXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IGNoYWxrIGZyb20gJ2NoYWxrJ1xuaW1wb3J0ICogYXMgUmVhY3QgZnJvbSAncmVhY3QnXG5pbXBvcnQgdHlwZSB7IENvbW1hbmRSZXN1bHREaXNwbGF5IH0gZnJvbSAnLi4vLi4vY29tbWFuZHMuanMnXG5pbXBvcnQgeyBNb2RlbFBpY2tlciB9IGZyb20gJy4uLy4uL2NvbXBvbmVudHMvTW9kZWxQaWNrZXIuanMnXG5pbXBvcnQgeyBDT01NT05fSEVMUF9BUkdTLCBDT01NT05fSU5GT19BUkdTIH0gZnJvbSAnLi4vLi4vY29uc3RhbnRzL3htbC5qcydcbmltcG9ydCB7XG4gIHR5cGUgQW5hbHl0aWNzTWV0YWRhdGFfSV9WRVJJRklFRF9USElTX0lTX05PVF9DT0RFX09SX0ZJTEVQQVRIUyxcbiAgbG9nRXZlbnQsXG59IGZyb20gJy4uLy4uL3NlcnZpY2VzL2FuYWx5dGljcy9pbmRleC5qcydcbmltcG9ydCB7IHVzZUFwcFN0YXRlLCB1c2VTZXRBcHBTdGF0ZSB9IGZyb20gJy4uLy4uL3N0YXRlL0FwcFN0YXRlLmpzJ1xuaW1wb3J0IHR5cGUgeyBMb2NhbEpTWENvbW1hbmRDYWxsIH0gZnJvbSAnLi4vLi4vdHlwZXMvY29tbWFuZC5qcydcbmltcG9ydCB0eXBlIHsgRWZmb3J0TGV2ZWwgfSBmcm9tICcuLi8uLi91dGlscy9lZmZvcnQuanMnXG5pbXBvcnQgeyBpc0JpbGxlZEFzRXh0cmFVc2FnZSB9IGZyb20gJy4uLy4uL3V0aWxzL2V4dHJhVXNhZ2UuanMnXG5pbXBvcnQge1xuICBjbGVhckZhc3RNb2RlQ29vbGRvd24sXG4gIGlzRmFzdE1vZGVBdmFpbGFibGUsXG4gIGlzRmFzdE1vZGVFbmFibGVkLFxuICBpc0Zhc3RNb2RlU3VwcG9ydGVkQnlNb2RlbCxcbn0gZnJvbSAnLi4vLi4vdXRpbHMvZmFzdE1vZGUuanMnXG5pbXBvcnQgeyBNT0RFTF9BTElBU0VTIH0gZnJvbSAnLi4vLi4vdXRpbHMvbW9kZWwvYWxpYXNlcy5qcydcbmltcG9ydCB7XG4gIGNoZWNrT3B1czFtQWNjZXNzLFxuICBjaGVja1Nvbm5ldDFtQWNjZXNzLFxufSBmcm9tICcuLi8uLi91dGlscy9tb2RlbC9jaGVjazFtQWNjZXNzLmpzJ1xuaW1wb3J0IHtcbiAgZ2V0RGVmYXVsdE1haW5Mb29wTW9kZWxTZXR0aW5nLFxuICBpc09wdXMxbU1lcmdlRW5hYmxlZCxcbiAgcmVuZGVyRGVmYXVsdE1vZGVsU2V0dGluZyxcbn0gZnJvbSAnLi4vLi4vdXRpbHMvbW9kZWwvbW9kZWwuanMnXG5pbXBvcnQgeyBpc01vZGVsQWxsb3dlZCB9IGZyb20gJy4uLy4uL3V0aWxzL21vZGVsL21vZGVsQWxsb3dsaXN0LmpzJ1xuaW1wb3J0IHsgdmFsaWRhdGVNb2RlbCB9IGZyb20gJy4uLy4uL3V0aWxzL21vZGVsL3ZhbGlkYXRlTW9kZWwuanMnXG5cbmZ1bmN0aW9uIE1vZGVsUGlja2VyV3JhcHBlcih7XG4gIG9uRG9uZSxcbn06IHtcbiAgb25Eb25lOiAoXG4gICAgcmVzdWx0Pzogc3RyaW5nLFxuICAgIG9wdGlvbnM/OiB7IGRpc3BsYXk/OiBDb21tYW5kUmVzdWx0RGlzcGxheSB9LFxuICApID0+IHZvaWRcbn0pOiBSZWFjdC5SZWFjdE5vZGUge1xuICBjb25zdCBtYWluTG9vcE1vZGVsID0gdXNlQXBwU3RhdGUocyA9PiBzLm1haW5Mb29wTW9kZWwpXG4gIGNvbnN0IG1haW5Mb29wTW9kZWxGb3JTZXNzaW9uID0gdXNlQXBwU3RhdGUocyA9PiBzLm1haW5Mb29wTW9kZWxGb3JTZXNzaW9uKVxuICBjb25zdCBpc0Zhc3RNb2RlID0gdXNlQXBwU3RhdGUocyA9PiBzLmZhc3RNb2RlKVxuICBjb25zdCBzZXRBcHBTdGF0ZSA9IHVzZVNldEFwcFN0YXRlKClcblxuICBmdW5jdGlvbiBoYW5kbGVDYW5jZWwoKTogdm9pZCB7XG4gICAgbG9nRXZlbnQoJ3Rlbmd1X21vZGVsX2NvbW1hbmRfbWVudScsIHtcbiAgICAgIGFjdGlvbjpcbiAgICAgICAgJ2NhbmNlbCcgYXMgQW5hbHl0aWNzTWV0YWRhdGFfSV9WRVJJRklFRF9USElTX0lTX05PVF9DT0RFX09SX0ZJTEVQQVRIUyxcbiAgICB9KVxuICAgIGNvbnN0IGRpc3BsYXlNb2RlbCA9IHJlbmRlck1vZGVsTGFiZWwobWFpbkxvb3BNb2RlbClcbiAgICBvbkRvbmUoYEtlcHQgbW9kZWwgYXMgJHtjaGFsay5ib2xkKGRpc3BsYXlNb2RlbCl9YCwge1xuICAgICAgZGlzcGxheTogJ3N5c3RlbScsXG4gICAgfSlcbiAgfVxuXG4gIGZ1bmN0aW9uIGhhbmRsZVNlbGVjdChcbiAgICBtb2RlbDogc3RyaW5nIHwgbnVsbCxcbiAgICBlZmZvcnQ6IEVmZm9ydExldmVsIHwgdW5kZWZpbmVkLFxuICApOiB2b2lkIHtcbiAgICBsb2dFdmVudCgndGVuZ3VfbW9kZWxfY29tbWFuZF9tZW51Jywge1xuICAgICAgYWN0aW9uOlxuICAgICAgICBtb2RlbCBhcyBBbmFseXRpY3NNZXRhZGF0YV9JX1ZFUklGSUVEX1RISVNfSVNfTk9UX0NPREVfT1JfRklMRVBBVEhTLFxuICAgICAgZnJvbV9tb2RlbDpcbiAgICAgICAgbWFpbkxvb3BNb2RlbCBhcyBBbmFseXRpY3NNZXRhZGF0YV9JX1ZFUklGSUVEX1RISVNfSVNfTk9UX0NPREVfT1JfRklMRVBBVEhTLFxuICAgICAgdG9fbW9kZWw6XG4gICAgICAgIG1vZGVsIGFzIEFuYWx5dGljc01ldGFkYXRhX0lfVkVSSUZJRURfVEhJU19JU19OT1RfQ09ERV9PUl9GSUxFUEFUSFMsXG4gICAgfSlcbiAgICBzZXRBcHBTdGF0ZShwcmV2ID0+ICh7XG4gICAgICAuLi5wcmV2LFxuICAgICAgbWFpbkxvb3BNb2RlbDogbW9kZWwsXG4gICAgICBtYWluTG9vcE1vZGVsRm9yU2Vzc2lvbjogbnVsbCxcbiAgICB9KSlcblxuICAgIGxldCBtZXNzYWdlID0gYFNldCBtb2RlbCB0byAke2NoYWxrLmJvbGQocmVuZGVyTW9kZWxMYWJlbChtb2RlbCkpfWBcbiAgICBpZiAoZWZmb3J0ICE9PSB1bmRlZmluZWQpIHtcbiAgICAgIG1lc3NhZ2UgKz0gYCB3aXRoICR7Y2hhbGsuYm9sZChlZmZvcnQpfSBlZmZvcnRgXG4gICAgfVxuXG4gICAgLy8gVHVybiBvZmYgZmFzdCBtb2RlIGlmIHN3aXRjaGluZyB0byB1bnN1cHBvcnRlZCBtb2RlbFxuICAgIGxldCB3YXNGYXN0TW9kZVRvZ2dsZWRPbiA9IHVuZGVmaW5lZFxuICAgIGlmIChpc0Zhc3RNb2RlRW5hYmxlZCgpKSB7XG4gICAgICBjbGVhckZhc3RNb2RlQ29vbGRvd24oKVxuICAgICAgaWYgKCFpc0Zhc3RNb2RlU3VwcG9ydGVkQnlNb2RlbChtb2RlbCkgJiYgaXNGYXN0TW9kZSkge1xuICAgICAgICBzZXRBcHBTdGF0ZShwcmV2ID0+ICh7XG4gICAgICAgICAgLi4ucHJldixcbiAgICAgICAgICBmYXN0TW9kZTogZmFsc2UsXG4gICAgICAgIH0pKVxuICAgICAgICB3YXNGYXN0TW9kZVRvZ2dsZWRPbiA9IGZhbHNlXG4gICAgICAgIC8vIERvIG5vdCB1cGRhdGUgZmFzdCBtb2RlIGluIHNldHRpbmdzIHNpbmNlIHRoaXMgaXMgYW4gYXV0b21hdGljIGRvd25ncmFkZVxuICAgICAgfSBlbHNlIGlmIChcbiAgICAgICAgaXNGYXN0TW9kZVN1cHBvcnRlZEJ5TW9kZWwobW9kZWwpICYmXG4gICAgICAgIGlzRmFzdE1vZGVBdmFpbGFibGUoKSAmJlxuICAgICAgICBpc0Zhc3RNb2RlXG4gICAgICApIHtcbiAgICAgICAgbWVzc2FnZSArPSBgIMK3IEZhc3QgbW9kZSBPTmBcbiAgICAgICAgd2FzRmFzdE1vZGVUb2dnbGVkT24gPSB0cnVlXG4gICAgICB9XG4gICAgfVxuXG4gICAgaWYgKFxuICAgICAgaXNCaWxsZWRBc0V4dHJhVXNhZ2UoXG4gICAgICAgIG1vZGVsLFxuICAgICAgICB3YXNGYXN0TW9kZVRvZ2dsZWRPbiA9PT0gdHJ1ZSxcbiAgICAgICAgaXNPcHVzMW1NZXJnZUVuYWJsZWQoKSxcbiAgICAgIClcbiAgICApIHtcbiAgICAgIG1lc3NhZ2UgKz0gYCDCtyBCaWxsZWQgYXMgZXh0cmEgdXNhZ2VgXG4gICAgfVxuXG4gICAgaWYgKHdhc0Zhc3RNb2RlVG9nZ2xlZE9uID09PSBmYWxzZSkge1xuICAgICAgLy8gRmFzdCBtb2RlIHdhcyB0b2dnbGVkIG9mZiwgc2hvdyBzdWZmaXggYWZ0ZXIgZXh0cmEgdXNhZ2UgYmlsbGluZ1xuICAgICAgbWVzc2FnZSArPSBgIMK3IEZhc3QgbW9kZSBPRkZgXG4gICAgfVxuXG4gICAgb25Eb25lKG1lc3NhZ2UpXG4gIH1cblxuICByZXR1cm4gKFxuICAgIDxNb2RlbFBpY2tlclxuICAgICAgaW5pdGlhbD17bWFpbkxvb3BNb2RlbH1cbiAgICAgIHNlc3Npb25Nb2RlbD17bWFpbkxvb3BNb2RlbEZvclNlc3Npb259XG4gICAgICBvblNlbGVjdD17aGFuZGxlU2VsZWN0fVxuICAgICAgb25DYW5jZWw9e2hhbmRsZUNhbmNlbH1cbiAgICAgIGlzU3RhbmRhbG9uZUNvbW1hbmRcbiAgICAgIHNob3dGYXN0TW9kZU5vdGljZT17XG4gICAgICAgIGlzRmFzdE1vZGVFbmFibGVkKCkgJiZcbiAgICAgICAgaXNGYXN0TW9kZSAmJlxuICAgICAgICBpc0Zhc3RNb2RlU3VwcG9ydGVkQnlNb2RlbChtYWluTG9vcE1vZGVsKSAmJlxuICAgICAgICBpc0Zhc3RNb2RlQXZhaWxhYmxlKClcbiAgICAgIH1cbiAgICAvPlxuICApXG59XG5cbmZ1bmN0aW9uIFNldE1vZGVsQW5kQ2xvc2Uoe1xuICBhcmdzLFxuICBvbkRvbmUsXG59OiB7XG4gIGFyZ3M6IHN0cmluZ1xuICBvbkRvbmU6IChcbiAgICByZXN1bHQ/OiBzdHJpbmcsXG4gICAgb3B0aW9ucz86IHsgZGlzcGxheT86IENvbW1hbmRSZXN1bHREaXNwbGF5IH0sXG4gICkgPT4gdm9pZFxufSk6IFJlYWN0LlJlYWN0Tm9kZSB7XG4gIGNvbnN0IGlzRmFzdE1vZGUgPSB1c2VBcHBTdGF0ZShzID0+IHMuZmFzdE1vZGUpXG4gIGNvbnN0IHNldEFwcFN0YXRlID0gdXNlU2V0QXBwU3RhdGUoKVxuICBjb25zdCBtb2RlbCA9IGFyZ3MgPT09ICdkZWZhdWx0JyA/IG51bGwgOiBhcmdzXG5cbiAgUmVhY3QudXNlRWZmZWN0KCgpID0+IHtcbiAgICBhc3luYyBmdW5jdGlvbiBoYW5kbGVNb2RlbENoYW5nZSgpOiBQcm9taXNlPHZvaWQ+IHtcbiAgICAgIGlmIChtb2RlbCAmJiAhaXNNb2RlbEFsbG93ZWQobW9kZWwpKSB7XG4gICAgICAgIG9uRG9uZShcbiAgICAgICAgICBgTW9kZWwgJyR7bW9kZWx9JyBpcyBub3QgYXZhaWxhYmxlLiBZb3VyIG9yZ2FuaXphdGlvbiByZXN0cmljdHMgbW9kZWwgc2VsZWN0aW9uLmAsXG4gICAgICAgICAgeyBkaXNwbGF5OiAnc3lzdGVtJyB9LFxuICAgICAgICApXG4gICAgICAgIHJldHVyblxuICAgICAgfVxuXG4gICAgICAvLyBAW01PREVMIExBVU5DSF06IFVwZGF0ZSBjaGVjayBmb3IgMU0gYWNjZXNzLlxuICAgICAgaWYgKG1vZGVsICYmIGlzT3B1czFtVW5hdmFpbGFibGUobW9kZWwpKSB7XG4gICAgICAgIG9uRG9uZShcbiAgICAgICAgICBgT3B1cyA0LjYgd2l0aCAxTSBjb250ZXh0IGlzIG5vdCBhdmFpbGFibGUgZm9yIHlvdXIgYWNjb3VudC4gTGVhcm4gbW9yZTogaHR0cHM6Ly9jb2RlLmNsYXVkZS5jb20vZG9jcy9lbi9tb2RlbC1jb25maWcjZXh0ZW5kZWQtY29udGV4dC13aXRoLTFtYCxcbiAgICAgICAgICB7IGRpc3BsYXk6ICdzeXN0ZW0nIH0sXG4gICAgICAgIClcbiAgICAgICAgcmV0dXJuXG4gICAgICB9XG5cbiAgICAgIGlmIChtb2RlbCAmJiBpc1Nvbm5ldDFtVW5hdmFpbGFibGUobW9kZWwpKSB7XG4gICAgICAgIG9uRG9uZShcbiAgICAgICAgICBgU29ubmV0IDQuNiB3aXRoIDFNIGNvbnRleHQgaXMgbm90IGF2YWlsYWJsZSBmb3IgeW91ciBhY2NvdW50LiBMZWFybiBtb3JlOiBodHRwczovL2NvZGUuY2xhdWRlLmNvbS9kb2NzL2VuL21vZGVsLWNvbmZpZyNleHRlbmRlZC1jb250ZXh0LXdpdGgtMW1gLFxuICAgICAgICAgIHsgZGlzcGxheTogJ3N5c3RlbScgfSxcbiAgICAgICAgKVxuICAgICAgICByZXR1cm5cbiAgICAgIH1cblxuICAgICAgLy8gU2tpcCB2YWxpZGF0aW9uIGZvciBkZWZhdWx0IG1vZGVsXG4gICAgICBpZiAoIW1vZGVsKSB7XG4gICAgICAgIHNldE1vZGVsKG51bGwpXG4gICAgICAgIHJldHVyblxuICAgICAgfVxuXG4gICAgICAvLyBTa2lwIHZhbGlkYXRpb24gZm9yIGtub3duIGFsaWFzZXMgLSB0aGV5J3JlIHByZWRlZmluZWQgYW5kIHNob3VsZCB3b3JrXG4gICAgICBpZiAoaXNLbm93bkFsaWFzKG1vZGVsKSkge1xuICAgICAgICBzZXRNb2RlbChtb2RlbClcbiAgICAgICAgcmV0dXJuXG4gICAgICB9XG5cbiAgICAgIC8vIFZhbGlkYXRlIGFuZCBzZXQgY3VzdG9tIG1vZGVsXG4gICAgICB0cnkge1xuICAgICAgICAvLyBEb24ndCB1c2UgcGFyc2VVc2VyU3BlY2lmaWVkTW9kZWwgZm9yIG5vbi1hbGlhc2VzIHNpbmNlIGl0IGxvd2VyY2FzZXMgdGhlIGlucHV0XG4gICAgICAgIC8vIGFuZCBtb2RlbCBuYW1lcyBhcmUgY2FzZS1zZW5zaXRpdmVcbiAgICAgICAgY29uc3QgeyB2YWxpZCwgZXJyb3IgfSA9IGF3YWl0IHZhbGlkYXRlTW9kZWwobW9kZWwpXG5cbiAgICAgICAgaWYgKHZhbGlkKSB7XG4gICAgICAgICAgc2V0TW9kZWwobW9kZWwpXG4gICAgICAgIH0gZWxzZSB7XG4gICAgICAgICAgb25Eb25lKGVycm9yIHx8IGBNb2RlbCAnJHttb2RlbH0nIG5vdCBmb3VuZGAsIHtcbiAgICAgICAgICAgIGRpc3BsYXk6ICdzeXN0ZW0nLFxuICAgICAgICAgIH0pXG4gICAgICAgIH1cbiAgICAgIH0gY2F0Y2ggKGVycm9yKSB7XG4gICAgICAgIG9uRG9uZShgRmFpbGVkIHRvIHZhbGlkYXRlIG1vZGVsOiAkeyhlcnJvciBhcyBFcnJvcikubWVzc2FnZX1gLCB7XG4gICAgICAgICAgZGlzcGxheTogJ3N5c3RlbScsXG4gICAgICAgIH0pXG4gICAgICB9XG4gICAgfVxuXG4gICAgZnVuY3Rpb24gc2V0TW9kZWwobW9kZWxWYWx1ZTogc3RyaW5nIHwgbnVsbCk6IHZvaWQge1xuICAgICAgc2V0QXBwU3RhdGUocHJldiA9PiAoe1xuICAgICAgICAuLi5wcmV2LFxuICAgICAgICBtYWluTG9vcE1vZGVsOiBtb2RlbFZhbHVlLFxuICAgICAgICBtYWluTG9vcE1vZGVsRm9yU2Vzc2lvbjogbnVsbCxcbiAgICAgIH0pKVxuICAgICAgbGV0IG1lc3NhZ2UgPSBgU2V0IG1vZGVsIHRvICR7Y2hhbGsuYm9sZChyZW5kZXJNb2RlbExhYmVsKG1vZGVsVmFsdWUpKX1gXG5cbiAgICAgIGxldCB3YXNGYXN0TW9kZVRvZ2dsZWRPbiA9IHVuZGVmaW5lZFxuICAgICAgaWYgKGlzRmFzdE1vZGVFbmFibGVkKCkpIHtcbiAgICAgICAgY2xlYXJGYXN0TW9kZUNvb2xkb3duKClcbiAgICAgICAgaWYgKCFpc0Zhc3RNb2RlU3VwcG9ydGVkQnlNb2RlbChtb2RlbFZhbHVlKSAmJiBpc0Zhc3RNb2RlKSB7XG4gICAgICAgICAgc2V0QXBwU3RhdGUocHJldiA9PiAoe1xuICAgICAgICAgICAgLi4ucHJldixcbiAgICAgICAgICAgIGZhc3RNb2RlOiBmYWxzZSxcbiAgICAgICAgICB9KSlcbiAgICAgICAgICB3YXNGYXN0TW9kZVRvZ2dsZWRPbiA9IGZhbHNlXG4gICAgICAgICAgLy8gRG8gbm90IHVwZGF0ZSBmYXN0IG1vZGUgaW4gc2V0dGluZ3Mgc2luY2UgdGhpcyBpcyBhbiBhdXRvbWF0aWMgZG93bmdyYWRlXG4gICAgICAgIH0gZWxzZSBpZiAoaXNGYXN0TW9kZVN1cHBvcnRlZEJ5TW9kZWwobW9kZWxWYWx1ZSkgJiYgaXNGYXN0TW9kZSkge1xuICAgICAgICAgIG1lc3NhZ2UgKz0gYCDCtyBGYXN0IG1vZGUgT05gXG4gICAgICAgICAgd2FzRmFzdE1vZGVUb2dnbGVkT24gPSB0cnVlXG4gICAgICAgIH1cbiAgICAgIH1cblxuICAgICAgaWYgKFxuICAgICAgICBpc0JpbGxlZEFzRXh0cmFVc2FnZShcbiAgICAgICAgICBtb2RlbFZhbHVlLFxuICAgICAgICAgIHdhc0Zhc3RNb2RlVG9nZ2xlZE9uID09PSB0cnVlLFxuICAgICAgICAgIGlzT3B1czFtTWVyZ2VFbmFibGVkKCksXG4gICAgICAgIClcbiAgICAgICkge1xuICAgICAgICBtZXNzYWdlICs9IGAgwrcgQmlsbGVkIGFzIGV4dHJhIHVzYWdlYFxuICAgICAgfVxuXG4gICAgICBpZiAod2FzRmFzdE1vZGVUb2dnbGVkT24gPT09IGZhbHNlKSB7XG4gICAgICAgIC8vIEZhc3QgbW9kZSB3YXMgdG9nZ2xlZCBvZmYsIHNob3cgc3VmZml4IGFmdGVyIGV4dHJhIHVzYWdlIGJpbGxpbmdcbiAgICAgICAgbWVzc2FnZSArPSBgIMK3IEZhc3QgbW9kZSBPRkZgXG4gICAgICB9XG5cbiAgICAgIG9uRG9uZShtZXNzYWdlKVxuICAgIH1cblxuICAgIHZvaWQgaGFuZGxlTW9kZWxDaGFuZ2UoKVxuICB9LCBbbW9kZWwsIG9uRG9uZSwgc2V0QXBwU3RhdGVdKVxuXG4gIHJldHVybiBudWxsXG59XG5cbmZ1bmN0aW9uIGlzS25vd25BbGlhcyhtb2RlbDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIHJldHVybiAoTU9ERUxfQUxJQVNFUyBhcyByZWFkb25seSBzdHJpbmdbXSkuaW5jbHVkZXMoXG4gICAgbW9kZWwudG9Mb3dlckNhc2UoKS50cmltKCksXG4gIClcbn1cblxuZnVuY3Rpb24gaXNPcHVzMW1VbmF2YWlsYWJsZShtb2RlbDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIGNvbnN0IG0gPSBtb2RlbC50b0xvd2VyQ2FzZSgpXG4gIHJldHVybiAoXG4gICAgIWNoZWNrT3B1czFtQWNjZXNzKCkgJiZcbiAgICAhaXNPcHVzMW1NZXJnZUVuYWJsZWQoKSAmJlxuICAgIG0uaW5jbHVkZXMoJ29wdXMnKSAmJlxuICAgIG0uaW5jbHVkZXMoJ1sxbV0nKVxuICApXG59XG5cbmZ1bmN0aW9uIGlzU29ubmV0MW1VbmF2YWlsYWJsZShtb2RlbDogc3RyaW5nKTogYm9vbGVhbiB7XG4gIGNvbnN0IG0gPSBtb2RlbC50b0xvd2VyQ2FzZSgpXG4gIC8vIFdhcm4gYWJvdXQgU29ubmV0IGFuZCBTb25uZXQgNC42LCBidXQgbm90IFNvbm5ldCA0LjUgc2luY2UgdGhhdCBoYWRcbiAgLy8gYSBkaWZmZXJlbnQgYWNjZXNzIGNyaXRlcmlhLlxuICByZXR1cm4gKFxuICAgICFjaGVja1Nvbm5ldDFtQWNjZXNzKCkgJiZcbiAgICAobS5pbmNsdWRlcygnc29ubmV0WzFtXScpIHx8IG0uaW5jbHVkZXMoJ3Nvbm5ldC00LTZbMW1dJykpXG4gIClcbn1cblxuZnVuY3Rpb24gU2hvd01vZGVsQW5kQ2xvc2Uoe1xuICBvbkRvbmUsXG59OiB7XG4gIG9uRG9uZTogKHJlc3VsdD86IHN0cmluZykgPT4gdm9pZFxufSk6IFJlYWN0LlJlYWN0Tm9kZSB7XG4gIGNvbnN0IG1haW5Mb29wTW9kZWwgPSB1c2VBcHBTdGF0ZShzID0+IHMubWFpbkxvb3BNb2RlbClcbiAgY29uc3QgbWFpbkxvb3BNb2RlbEZvclNlc3Npb24gPSB1c2VBcHBTdGF0ZShzID0+IHMubWFpbkxvb3BNb2RlbEZvclNlc3Npb24pXG4gIGNvbnN0IGVmZm9ydFZhbHVlID0gdXNlQXBwU3RhdGUocyA9PiBzLmVmZm9ydFZhbHVlKVxuICBjb25zdCBkaXNwbGF5TW9kZWwgPSByZW5kZXJNb2RlbExhYmVsKG1haW5Mb29wTW9kZWwpXG4gIGNvbnN0IGVmZm9ydEluZm8gPVxuICAgIGVmZm9ydFZhbHVlICE9PSB1bmRlZmluZWQgPyBgIChlZmZvcnQ6ICR7ZWZmb3J0VmFsdWV9KWAgOiAnJ1xuXG4gIGlmIChtYWluTG9vcE1vZGVsRm9yU2Vzc2lvbikge1xuICAgIG9uRG9uZShcbiAgICAgIGBDdXJyZW50IG1vZGVsOiAke2NoYWxrLmJvbGQocmVuZGVyTW9kZWxMYWJlbChtYWluTG9vcE1vZGVsRm9yU2Vzc2lvbikpfSAoc2Vzc2lvbiBvdmVycmlkZSBmcm9tIHBsYW4gbW9kZSlcXG5CYXNlIG1vZGVsOiAke2Rpc3BsYXlNb2RlbH0ke2VmZm9ydEluZm99YCxcbiAgICApXG4gIH0gZWxzZSB7XG4gICAgb25Eb25lKGBDdXJyZW50IG1vZGVsOiAke2Rpc3BsYXlNb2RlbH0ke2VmZm9ydEluZm99YClcbiAgfVxuXG4gIHJldHVybiBudWxsXG59XG5cbmV4cG9ydCBjb25zdCBjYWxsOiBMb2NhbEpTWENvbW1hbmRDYWxsID0gYXN5bmMgKG9uRG9uZSwgX2NvbnRleHQsIGFyZ3MpID0+IHtcbiAgYXJncyA9IGFyZ3M/LnRyaW0oKSB8fCAnJ1xuICBpZiAoQ09NTU9OX0lORk9fQVJHUy5pbmNsdWRlcyhhcmdzKSkge1xuICAgIGxvZ0V2ZW50KCd0ZW5ndV9tb2RlbF9jb21tYW5kX2lubGluZV9oZWxwJywge1xuICAgICAgYXJnczogYXJncyBhcyBBbmFseXRpY3NNZXRhZGF0YV9JX1ZFUklGSUVEX1RISVNfSVNfTk9UX0NPREVfT1JfRklMRVBBVEhTLFxuICAgIH0pXG4gICAgcmV0dXJuIDxTaG93TW9kZWxBbmRDbG9zZSBvbkRvbmU9e29uRG9uZX0gLz5cbiAgfVxuICBpZiAoQ09NTU9OX0hFTFBfQVJHUy5pbmNsdWRlcyhhcmdzKSkge1xuICAgIG9uRG9uZShcbiAgICAgICdSdW4gL21vZGVsIHRvIG9wZW4gdGhlIG1vZGVsIHNlbGVjdGlvbiBtZW51LCBvciAvbW9kZWwgW21vZGVsTmFtZV0gdG8gc2V0IHRoZSBtb2RlbC4nLFxuICAgICAgeyBkaXNwbGF5OiAnc3lzdGVtJyB9LFxuICAgIClcbiAgICByZXR1cm5cbiAgfVxuXG4gIGlmIChhcmdzKSB7XG4gICAgbG9nRXZlbnQoJ3Rlbmd1X21vZGVsX2NvbW1hbmRfaW5saW5lJywge1xuICAgICAgYXJnczogYXJncyBhcyBBbmFseXRpY3NNZXRhZGF0YV9JX1ZFUklGSUVEX1RISVNfSVNfTk9UX0NPREVfT1JfRklMRVBBVEhTLFxuICAgIH0pXG4gICAgcmV0dXJuIDxTZXRNb2RlbEFuZENsb3NlIGFyZ3M9e2FyZ3N9IG9uRG9uZT17b25Eb25lfSAvPlxuICB9XG5cbiAgcmV0dXJuIDxNb2RlbFBpY2tlcldyYXBwZXIgb25Eb25lPXtvbkRvbmV9IC8+XG59XG5cbmZ1bmN0aW9uIHJlbmRlck1vZGVsTGFiZWwobW9kZWw6IHN0cmluZyB8IG51bGwpOiBzdHJpbmcge1xuICBjb25zdCByZW5kZXJlZCA9IHJlbmRlckRlZmF1bHRNb2RlbFNldHRpbmcoXG4gICAgbW9kZWwgPz8gZ2V0RGVmYXVsdE1haW5Mb29wTW9kZWxTZXR0aW5nKCksXG4gIClcbiAgcmV0dXJuIG1vZGVsID09PSBudWxsID8gYCR7cmVuZGVyZWR9IChkZWZhdWx0KWAgOiByZW5kZXJlZFxufVxuIl0sIm1hcHBpbmdzIjoiO0FBQUEsT0FBT0EsS0FBSyxNQUFNLE9BQU87QUFDekIsT0FBTyxLQUFLQyxLQUFLLE1BQU0sT0FBTztBQUM5QixjQUFjQyxvQkFBb0IsUUFBUSxtQkFBbUI7QUFDN0QsU0FBU0MsV0FBVyxRQUFRLGlDQUFpQztBQUM3RCxTQUFT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
